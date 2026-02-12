@@ -137,6 +137,9 @@ class NeuTTS:
                     "    pip install llama-cpp-python"
                 ) from e
 
+            seed = random.randint(0, 2**32)
+            print(f"Using seed {seed}")
+
             if os.path.isfile(backbone_repo):
                 self.backbone = Llama(
                     model_path=backbone_repo,
@@ -145,7 +148,7 @@ class NeuTTS:
                     n_ctx=self.max_context,
                     mlock=True,
                     flash_attn=True if backbone_device == "gpu" else False,
-                    seed=random.randint(0, 2**32),
+                    seed=seed,
                 )
             else:
                 self.backbone = Llama.from_pretrained(
@@ -156,7 +159,7 @@ class NeuTTS:
                     n_ctx=self.max_context,
                     mlock=True,
                     flash_attn=True if backbone_device == "gpu" else False,
-                    seed=random.randint(0, 2**32),
+                    seed=seed,
                 )
 
             self._is_quantized_model = True
