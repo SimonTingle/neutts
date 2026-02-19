@@ -139,7 +139,7 @@ We include benchmarks on four devices: Galaxy A25 5G, AMD Ryzen 9HX 370, iMac M4
 
    To use any of the GGUF backbones (e.g., in basic_streaming_example.py) you need to install the llama-cpp-python package.
 
-   For the best performance, you must compile this package from source with hardware acceleration enabled for your specific operation system and target device (CPU or GPU).
+   For the best performance, you must compile this package from source with hardware acceleration enabled for your specific operating system and target device (CPU or GPU).
 
    #### macOS (Apple Silicon)
 
@@ -159,8 +159,11 @@ We include benchmarks on four devices: Galaxy A25 5G, AMD Ryzen 9HX 370, iMac M4
    ```
 
    #### Windows (OpenBLAS)
+
+      *Prerequisite: Ensure you have OpenBLAS installed on your system. Please refer to the [OpenBLAS Installation Guide](https://github.com/OpenMathLib/OpenBLAS/blob/develop/docs/install.md).*
+
    For Windows users utilizing PowerShell, set the environment variable and run the install command like this:
-   ```bash
+   ```pwsh
       $env:CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS"; pip install "neutts[llama]" --force-reinstall --no-cache-dir
    ```
 
