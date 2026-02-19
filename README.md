@@ -137,12 +137,38 @@ We include benchmarks on four devices: Galaxy A25 5G, AMD Ryzen 9HX 370, iMac M4
 
 3. **(Optional) Install `llama-cpp-python` to use `.gguf` models.**
 
+   To use any of the GGUF backbones (e.g., in basic_streaming_example.py) you need to install the llama-cpp-python package.
+
+   For the best performance, you must compile this package from source with hardware acceleration enabled for your specific operating system and target device (CPU or GPU).
+
+   #### macOS (Apple Silicon)
+
+   For M-series Macs, it is highly recommended to use Apple's native Accelerate framework for optimized CPU performance:
+
    ```bash
-   pip install "neutts[llama]"
+      CMAKE_ARGS="-DGGML_METAL=OFF -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple" pip install "neutts[llama]" --force-reinstall --no-cache-dir
+      ```
+
+   #### Linux (OpenBLAS)
+   For Linux, you can accelerate CPU performance using OpenBLAS.
+
+   *Prerequisite: Ensure you have OpenBLAS installed on your system (e.g., `sudo apt-get install libopenblas-dev` on Ubuntu). For other distros, refer to the [OpenBLAS Installation Guide](https://github.com/OpenMathLib/OpenBLAS/blob/develop/docs/install.md).*
+
+   ```bash
+      CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" pip install "neutts[llama]" --force-reinstall --no-cache-dir
    ```
 
-   Note that this installs `llama-cpp-python` without GPU support. To install with GPU support (e.g., CUDA, MPS) please refer to:
-   https://pypi.org/project/llama-cpp-python/
+   #### Windows (OpenBLAS)
+
+      *Prerequisite: Ensure you have OpenBLAS installed on your system. Please refer to the [OpenBLAS Installation Guide](https://github.com/OpenMathLib/OpenBLAS/blob/develop/docs/install.md).*
+
+   For Windows users utilizing PowerShell, set the environment variable and run the install command like this:
+   ```pwsh
+      $env:CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS"; pip install "neutts[llama]" --force-reinstall --no-cache-dir
+   ```
+
+   #### Looking for GPU Support?
+   If you have a dedicated GPU (Nvidia/CUDA, AMD/ROCm, M-Series Mac/Metal) and want to utilize it instead of the CPU, the CMAKE flags will be different.Please refer to the official [llama-cpp-python documentation](https://github.com/abetlen/llama-cpp-python/blob/main/README.md) for the exact flags required for your specific hardware.
 
 4. **(Optional) Install `onnxruntime` to use the `.onnx` decoder.**
    ```bash
