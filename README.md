@@ -51,7 +51,7 @@ NeuTTS models are built from small LLM backbones - lightweight yet capable langu
 
 ## Throughput Benchmarking
 
-These benchmarks are for the Q4_0 quantisations [neutts-air-Q4_0](https://huggingface.co/neuphonic/neutts-air-q4-gguf) and [neutts-nano-Q4_0](https://huggingface.co/neuphonic/neutts-nano-q4-gguf). Note that all models in the NeuTTS-Nano Multilingual Collection have an identical architecture, so these results should apply for any Q4_0 model in the collection. 
+These benchmarks are for the Q4_0 quantisations [neutts-air-Q4_0](https://huggingface.co/neuphonic/neutts-air-q4-gguf) and [neutts-nano-Q4_0](https://huggingface.co/neuphonic/neutts-nano-q4-gguf). Note that all models in the NeuTTS-Nano Multilingual Collection have an identical architecture, so these results should apply for any Q4_0 model in the collection.
 
 CPU benchmarking used [llama-bench](https://github.com/ggml-org/llama.cpp/tree/master/tools/llama-bench) (from llama.cpp) to measure prefill and decode throughput at multiple context sizes. For the GPU benchmark (RTX 4090), we leverage vLLM to maximise throughput, using the [vLLM benchmark](https://docs.vllm.ai/en/stable/cli/bench/throughput/).
 
@@ -80,7 +80,7 @@ We include benchmarks on four devices: Galaxy A25 5G, AMD Ryzen 9HX 370, iMac M4
 1. **Install System Dependencies (required): `espeak-ng`**
 
 > [!CAUTION]
-> `espeak-ng` is an updated version of `espeak`, as of February 2026 on version 1.52.0. Older versions of `espeak` and `espeak-ng` can exhibit significant phonemisation issues, particularly for non-English languages. Updating your system version of `espeak-ng` to the latest version possible is highly recommended. 
+> `espeak-ng` is an updated version of `espeak`, as of February 2026 on version 1.52.0. Older versions of `espeak` and `espeak-ng` can exhibit significant phonemisation issues, particularly for non-English languages. Updating your system version of `espeak-ng` to the latest version possible is highly recommended.
 
 > [!NOTE]
 > `brew` on macOS Ventura and later, `apt` in Ubuntu version 25 or Debian version 13, and `choco`/`winget` on Windows, install the latest version of `espeak-ng` with the commands below. If you have a different or older operating system, you may need to install from source: see the following link https://github.com/espeak-ng/espeak-ng/blob/master/docs/building.md
@@ -132,17 +132,42 @@ We include benchmarks on four devices: Galaxy A25 5G, AMD Ryzen 9HX 370, iMac M4
    or for an editable install:
 
    ```bash
-   pip install -e .[all]
+   pip install neutts[all]
    ```
 
 3. **(Optional) Install `llama-cpp-python` to use `.gguf` models.**
 
+   To run the examples using `llama.cpp` (GGML) under the hood, you need to install the `llama-cpp-python` dependency.
+
+   For the best performance, you must compile this package from source with hardware acceleration enabled for your specific operating system (CPU or GPU).
+
+   *(Note: The `--no-binary llama-cpp-python` flag is required in these commands to force pip to compile from source and respect your hardware flags!)*
+
+   #### 🍎 macOS (Apple Silicon)
+
+   For M-series Macs, it is highly recommended to use Apple's native Accelerate framework for optimized CPU performance:
+
    ```bash
-   pip install "neutts[llama]"
+      CMAKE_ARGS="-DGGML_METAL=OFF -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple" pip install "neutts[llama]" --force-reinstall --no-cache-dir --no-binary llama-cpp-python
+      ```
+
+   #### 🐧 Linux (OpenBLAS)
+   For Linux, you can accelerate CPU performance using OpenBLAS.
+
+   *Prerequisite: Ensure you have OpenBLAS installed on your system (e.g., `sudo apt-get install libopenblas-dev` on Ubuntu). For other distros, refer to the [OpenBLAS Installation Guide](https://github.com/OpenMathLib/OpenBLAS/blob/develop/docs/install.md).*
+
+   ```bash
+      CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" pip install "neutts[llama]" --force-reinstall --no-cache-dir --no-binary llama-cpp-python
    ```
 
-   Note that this installs `llama-cpp-python` without GPU support. To install with GPU support (e.g., CUDA, MPS) please refer to:
-   https://pypi.org/project/llama-cpp-python/
+   #### 🪟 Windows (OpenBLAS)
+   For Windows users utilizing PowerShell, set the environment variable and run the install command like this:
+   ```bash
+      $env:CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS"; pip install "neutts[llama]" --force-reinstall --no-cache-dir --no-binary llama-cpp-python
+   ```
+
+   #### Looking for GPU Support?
+   If you have a dedicated GPU (Nvidia/CUDA, AMD/ROCm, or Mac Metal) and want to utilize it instead of the CPU, the CMAKE flags will be different.Please refer to the official [llama-cpp-python documentation](https://github.com/abetlen/llama-cpp-python/blob/main/README.md) for the exact flags required for your specific hardware.
 
 4. **(Optional) Install `onnxruntime` to use the `.onnx` decoder.**
    ```bash
@@ -170,7 +195,7 @@ python -m examples.basic_example \
   --ref_text samples/jo.txt
 ```
 
-To specify a particular model repo for the backbone or codec, add the `--backbone` argument. Available backbones are listed in [NeuTTS-Air](https://huggingface.co/collections/neuphonic/neutts-air) and [NeuTTS-Nano Multilingual Collection](https://huggingface.co/collections/neuphonic/neutts-nano-multilingual-collection) huggingface collections. 
+To specify a particular model repo for the backbone or codec, add the `--backbone` argument. Available backbones are listed in [NeuTTS-Air](https://huggingface.co/collections/neuphonic/neutts-air) and [NeuTTS-Nano Multilingual Collection](https://huggingface.co/collections/neuphonic/neutts-nano-multilingual-collection) huggingface collections.
 
 > [!CAUTION]
 > If you are using a non-English backbone, it is highly recommended to use a same-language reference for best performance. See the 'example reference files' section below to select an appropriate example reference.
