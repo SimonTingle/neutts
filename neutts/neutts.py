@@ -117,8 +117,8 @@ class NeuTTS:
                 language = BACKBONE_LANGUAGE_MAP[backbone_repo]
             else:
                 raise ValueError(
-                    """If you aren't using a Neuphonic model, make sure to specify an
-                      eSpeak language code as the `language` parameter."""
+                    "If you aren't using a Neuphonic model, make sure to specify any "
+                    "eSpeak language code as the `language` parameter."
                 )
 
         if language in CUSTOM_PHONEMIZERS:
