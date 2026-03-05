@@ -103,7 +103,7 @@ class NeuTTS:
             import perth
 
             self.watermarker = perth.PerthImplicitWatermarker()
-        except (ImportError, AttributeError) as e:
+        except (ImportError, AttributeError, TypeError) as e:
             warnings.warn(
                 f"Perth watermarking unavailable: {e}. "
                 "Audio will not be watermarked. "
