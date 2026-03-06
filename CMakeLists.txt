@@ -32,13 +32,21 @@ ExternalProject_Add(espeak_ng_external
     UPDATE_DISCONNECTED TRUE
 )
 
-# Bundle the shared library into the neutts package so phonemizer can load it
-install(DIRECTORY ${ESPEAKNG_INSTALL_DIR}/lib/
-    DESTINATION neutts
-    FILES_MATCHING
-    PATTERN "libespeak-ng*"
-    PATTERN "espeak-ng*.dll"
-)
+# Bundle the shared library into the neutts package so phonemizer can load it.
+# On Unix: the .so/.dylib lands in lib/. On Windows: the .dll lands in bin/.
+if(WIN32)
+    install(DIRECTORY ${ESPEAKNG_INSTALL_DIR}/bin/
+        DESTINATION neutts
+        FILES_MATCHING
+        PATTERN "espeak-ng*.dll"
+    )
+else()
+    install(DIRECTORY ${ESPEAKNG_INSTALL_DIR}/lib/
+        DESTINATION neutts
+        FILES_MATCHING
+        PATTERN "libespeak-ng*"
+    )
+endif()
 
 # Bundle espeak-ng-data so phonemizer can find the voice/language data
 install(DIRECTORY ${ESPEAKNG_INSTALL_DIR}/share/espeak-ng-data/
