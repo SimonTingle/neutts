@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.9"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "neutts"
-version = "1.1.0"
+version = "1.2.0"
 authors = [
   { name="neuphonic", email="general@neuphonic.com" },
 ]
@@ -28,5 +28,6 @@ llama = ["llama-cpp-python"]
 onnx = ["onnxruntime"]
 all = ["llama-cpp-python", "onnxruntime"]
 
-[tool.setuptools.packages.find]
-include = ["neutts*"]
+[tool.scikit-build]
+# Include the espeak-ng-data directory that cmake copies into the package
+wheel.packages = ["neutts", "neuttsair"]

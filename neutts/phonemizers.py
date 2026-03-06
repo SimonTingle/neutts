@@ -2,36 +2,99 @@ from typing import Union, List
 from phonemizer.backend import EspeakBackend
 import platform
 import glob
+import os
+from pathlib import Path
 
 
-def _configure_espeak_library():
-    """Auto-detect and configure espeak library on macOS."""
-    if platform.system() != "Darwin":
-        return  # Only needed on macOS
+def _configure_espeak_library() -> bool:
+    """Configure phonemizer to use the espeak-ng bundled with this package.
 
-    # Common Homebrew installation paths
-    search_paths = [
-        "/opt/homebrew/Cellar/espeak/*/lib/libespeak.*.dylib",  # Apple Silicon
-        "/usr/local/Cellar/espeak/*/lib/libespeak.*.dylib",  # Intel
-        "/opt/homebrew/Cellar/espeak-ng/*/lib/libespeak-ng.*.dylib",  # Apple Silicon
-        "/usr/local/Cellar/espeak-ng/*/lib/libespeak-ng.*.dylib",
-    ]
+    Falls back to system/Homebrew espeak-ng if the bundled version is not present
+    (e.g. when running from a source checkout without building).
 
-    for pattern in search_paths:
-        matches = glob.glob(pattern)
-        if matches:
-            try:
-                from phonemizer.backend.espeak.wrapper import EspeakWrapper
+    Returns True if the bundled version was loaded, False if a system fallback was used.
+    """
+    try:
+        from phonemizer.backend.espeak.wrapper import EspeakWrapper
 
-                EspeakWrapper.set_library(matches[0])
-                return
-            except Exception:
-                # If this fails, phonemizer will try its default detection
-                pass
+        pkg_dir = Path(__file__).parent
+
+        # Locate the bundled shared library
+        system = platform.system()
+        if system == "Windows":
+            patterns = ["espeak-ng*.dll"]
+        elif system == "Darwin":
+            patterns = ["libespeak-ng*.dylib"]
+        else:
+            patterns = ["libespeak-ng.so*", "libespeak-ng*.so"]
+
+        lib_path = None
+        for pattern in patterns:
+            matches = list(pkg_dir.glob(pattern))
+            if matches:
+                lib_path = str(matches[0])
+                break
+
+        if lib_path:
+            EspeakWrapper.set_library(lib_path)
+
+            # Point espeak-ng at the bundled data directory
+            data_dir = pkg_dir / "espeak-ng-data"
+            if data_dir.exists():
+                os.environ["ESPEAK_DATA_PATH"] = str(data_dir)
+            return True
+
+    except Exception:
+        pass
+
+    # Fallback 1: look for the bundled library in the active venv's site-packages.
+    # This handles running pytest from a source checkout whose venv contains the
+    # installed neutts wheel (which ships libespeak-ng).
+    try:
+        import site
+        from phonemizer.backend.espeak.wrapper import EspeakWrapper
+
+        system = platform.system()
+        if system == "Windows":
+            lib_pattern = "espeak-ng*.dll"
+        elif system == "Darwin":
+            lib_pattern = "libespeak-ng*.dylib"
+        else:
+            lib_pattern = "libespeak-ng*.so*"
+
+        for site_dir in site.getsitepackages():
+            for candidate in Path(site_dir).glob(f"neutts/{lib_pattern}"):
+                EspeakWrapper.set_library(str(candidate))
+                data_dir = candidate.parent / "espeak-ng-data"
+                if data_dir.exists():
+                    os.environ["ESPEAK_DATA_PATH"] = str(data_dir)
+                return True
+    except Exception:
+        pass
+
+    # Fallback 2: search common Homebrew/system paths on macOS
+    if platform.system() == "Darwin":
+        search_paths = [
+            "/opt/homebrew/Cellar/espeak-ng/*/lib/libespeak-ng.*.dylib",
+            "/usr/local/Cellar/espeak-ng/*/lib/libespeak-ng.*.dylib",
+            "/opt/homebrew/Cellar/espeak/*/lib/libespeak.*.dylib",
+            "/usr/local/Cellar/espeak/*/lib/libespeak.*.dylib",
+        ]
+        for pattern in search_paths:
+            matches = glob.glob(pattern)
+            if matches:
+                try:
+                    from phonemizer.backend.espeak.wrapper import EspeakWrapper
+                    EspeakWrapper.set_library(matches[0])
+                except Exception:
+                    pass
+                break
+
+    return False
 
 
-# Call before using phonemizer
-_configure_espeak_library()
+# Call before using phonemizer. Tracks whether we loaded the bundled espeak-ng.
+_using_bundled_espeak = _configure_espeak_library()
 
 
 class BasePhonemizer:
@@ -52,6 +115,15 @@ class BasePhonemizer:
         )
 
         self.espeak_version = self.g2p.version()  # returns (major, minor, patch)
+
+        if not _using_bundled_espeak:
+            version_str = ".".join(str(v) for v in self.espeak_version)
+            print(
+                f"\nWARNING: You are using espeak-ng version {version_str}, which is not the "
+                "supported version bundled with NeuTTS. This version is not supported and may "
+                "not work as intended, particularly for non-English languages. "
+                "To use the correct version, reinstall the package via pip: pip install neutts\n"
+            )
 
     def preprocess(self, text: str) -> str:
         """Language-specific text preprocessing."""
