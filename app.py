@@ -14,9 +14,17 @@ from pathlib import Path
 import gradio as gr
 import librosa
 import numpy as np
-import torch
 
-from neutts import NeuTTS
+try:
+    import torch as _torch
+    _HAS_TORCH = True
+except ImportError:
+    _torch = None  # type: ignore[assignment]
+    _HAS_TORCH = False
+
+# NeuTTS imported lazily inside load_model() so the frontend container
+# (which has no torch/neutts) can still start in remote-backend mode.
+NeuTTS = None  # type: ignore[assignment]
 
 # Suppress repetitive third-party deprecation noise that isn't actionable.
 # Our own _log() calls replace these with clear, structured output.
@@ -59,10 +67,13 @@ TORCH_MODELS = [
 ALL_MODELS = GGUF_MODELS + TORCH_MODELS
 
 _DEVICES = ["auto", "cpu"]
-if torch.backends.mps.is_available():
-    _DEVICES.insert(1, "metal")
-if torch.cuda.is_available():
-    _DEVICES.insert(1, "cuda")
+if _HAS_TORCH:
+    if _torch.backends.mps.is_available():
+        _DEVICES.insert(1, "metal")
+    if _torch.cuda.is_available():
+        _DEVICES.insert(1, "cuda")
+else:
+    _DEVICES += ["metal", "cuda"]  # show all; backend decides what's available
 DEVICES = _DEVICES
 
 CODEC_REPOS: dict[str, str] = {
@@ -88,9 +99,24 @@ SAMPLE_CHOICES = ["— custom upload —"] + list(_SAMPLE_SPEAKERS)
 # Formats natively readable by soundfile (no ffmpeg needed)
 _SOUNDFILE_FORMATS = {".wav", ".flac", ".ogg", ".aiff", ".aif", ".au", ".snd"}
 
+# ─── Remote backend (HuggingFace Spaces) ─────────────────────────────────────
+# Set NEUTTS_BACKEND_URL to point at the HF Spaces FastAPI backend.
+# When set the frontend never loads models locally — all inference is remote.
+import os as _os
+BACKEND_URL     = _os.environ.get("NEUTTS_BACKEND_URL", "").rstrip("/")
+BACKEND_API_KEY = _os.environ.get("NEUTTS_API_KEY", "")
+
+
+def _remote_headers() -> dict:
+    h = {"Accept": "application/json"}
+    if BACKEND_API_KEY:
+        h["X-API-Key"] = BACKEND_API_KEY
+    return h
+
+
 # ─── Singleton state ──────────────────────────────────────────────────────────
 
-_tts: NeuTTS | None = None
+_tts = None
 _loaded_cfg: dict = {}
 _ref_cache: dict[str, object] = {}   # audio file path → encoded ref codes
 _fallback_encoder = None              # NeuCodec loaded lazily for ONNX-only setups
@@ -221,8 +247,25 @@ def _convert_audio_to_wav(path: str) -> str:
 def load_model(backbone: str, device: str, codec_label: str) -> str:
     global _tts, _loaded_cfg, _ref_cache, _fallback_encoder
 
+    # ── Remote backend mode ────────────────────────────────────────────────────
+    if BACKEND_URL:
+        _log(f"load_model: remote mode — pinging {BACKEND_URL}/health")
+        try:
+            import requests
+            r = requests.get(f"{BACKEND_URL}/health", headers=_remote_headers(), timeout=15)
+            r.raise_for_status()
+            data = r.json()
+            loaded = data.get("model_loaded", False)
+            bb = data.get("backbone", "unknown")
+            _log(f"load_model: backend healthy  model_loaded={loaded}  backbone={bb}")
+            status = "✓ Remote backend connected" if loaded else "⚠ Backend up but model not loaded"
+            return f"{status}\n{BACKEND_URL}\nBackbone: {bb}"
+        except Exception as exc:
+            _log(f"load_model: backend ping failed: {exc}", "ERROR")
+            return f"✗ Cannot reach backend:\n{BACKEND_URL}\n{exc}"
+
+    # ── Local mode ─────────────────────────────────────────────────────────────
     codec_repo = CODEC_REPOS[codec_label]
-    # ONNX decoders run CPU-only; full codecs can share the backbone device.
     codec_device = "cpu" if codec_repo in ONNX_CODECS else device
     cfg = {"backbone": backbone, "device": device, "codec": codec_repo}
 
@@ -239,8 +282,9 @@ def load_model(backbone: str, device: str, codec_label: str) -> str:
     _fallback_encoder = None
 
     try:
+        from neutts import NeuTTS as _NeuTTS
         _log("load_model: instantiating NeuTTS...")
-        _tts = NeuTTS(
+        _tts = _NeuTTS(
             backbone_repo=backbone,
             backbone_device=device,
             codec_repo=codec_repo,
@@ -285,8 +329,8 @@ def _encode_reference(audio_path: str) -> tuple[object, str | None]:
         _log(f"encode_reference: loading audio at 16 kHz for fallback encoder...")
         wav, _ = librosa.load(audio_path, sr=16_000, mono=True)
         _log(f"encode_reference: audio loaded  {len(wav)} samples @ 16 kHz")
-        wav_t = torch.from_numpy(wav).float().unsqueeze(0).unsqueeze(0)
-        with torch.no_grad():
+        wav_t = _torch.from_numpy(wav).float().unsqueeze(0).unsqueeze(0)
+        with _torch.no_grad():
             codes = _fallback_encoder.encode_code(audio_or_path=wav_t).squeeze(0).squeeze(0)
         _log(f"encode_reference: fallback encode OK  shape={codes.shape}")
 
@@ -366,14 +410,15 @@ def transcribe_ref_audio(audio_path: str | None, model_label: str = WHISPER_MODE
     if not audio_path:
         _log("transcribe: no audio path", "WARN")
         return ""
+    model_id = _WHISPER_LABEL_TO_ID.get(model_label, "base")
+    audio_path = _convert_audio_to_wav(audio_path)
+    if BACKEND_URL:
+        return _transcribe_remote(audio_path, model_id)
     try:
         import whisper as _whisper_pkg
     except ImportError:
         _log("transcribe: openai-whisper not installed", "WARN")
         return "⚠ openai-whisper not installed — run:  pip install openai-whisper"
-
-    audio_path = _convert_audio_to_wav(audio_path)
-    model_id = _WHISPER_LABEL_TO_ID.get(model_label, "base")
 
     if _whisper_model is None or _whisper_model_name != model_id:
         size_hint = {
@@ -546,6 +591,55 @@ def on_sample_select(choice):
     return gr.update(value=wav_path), gr.update(value=transcript)
 
 
+# ─── Remote generation helpers ────────────────────────────────────────────────
+
+def _generate_remote(text, ref_audio_path, ref_text, temperature, top_k):
+    """Call the HF Spaces /generate endpoint; yields (sample_rate, ndarray) once."""
+    import requests
+    _log(f"generate_remote: POST {BACKEND_URL}/generate  text_len={len(text)}")
+    try:
+        with open(ref_audio_path, "rb") as f:
+            audio_bytes = f.read()
+        filename = Path(ref_audio_path).name
+        r = requests.post(
+            f"{BACKEND_URL}/generate",
+            headers=_remote_headers(),
+            data={"text": text, "ref_text": ref_text or " ",
+                  "temperature": temperature, "top_k": top_k},
+            files={"ref_audio": (filename, audio_bytes, "audio/wav")},
+            timeout=180,
+        )
+        r.raise_for_status()
+        import soundfile as _sf, io
+        wav, sr = _sf.read(io.BytesIO(r.content))
+        _log(f"generate_remote: received {len(wav)} samples @ {sr} Hz")
+        yield (sr, wav.astype(np.float32)), "✓ Remote generation complete"
+    except Exception as exc:
+        _log(f"generate_remote: failed: {exc}", "ERROR")
+        yield None, f"✗ Remote backend error: {exc}"
+
+
+def _transcribe_remote(audio_path: str, model_id: str) -> str:
+    """Call the HF Spaces /transcribe endpoint and return text."""
+    import requests
+    _log(f"transcribe_remote: POST {BACKEND_URL}/transcribe  model={model_id}")
+    try:
+        with open(audio_path, "rb") as f:
+            audio_bytes = f.read()
+        r = requests.post(
+            f"{BACKEND_URL}/transcribe",
+            headers=_remote_headers(),
+            data={"model_id": model_id},
+            files={"audio": (Path(audio_path).name, audio_bytes, "audio/wav")},
+            timeout=120,
+        )
+        r.raise_for_status()
+        return r.json().get("text", "")
+    except Exception as exc:
+        _log(f"transcribe_remote: failed: {exc}", "ERROR")
+        return f"⚠ Remote transcription failed: {exc}"
+
+
 # ─── Generation ───────────────────────────────────────────────────────────────
 
 def generate(text, ref_audio, ref_text, streaming, temperature, top_k):
@@ -555,6 +649,18 @@ def generate(text, ref_audio, ref_text, streaming, temperature, top_k):
     _log(f"  ref_audio   : {ref_audio!r}")
     _log(f"  ref_text    : {repr(ref_text)[:60]}")
     _log(f"  streaming   : {streaming}  temperature: {temperature}  top_k: {top_k}")
+
+    # ── Remote backend shortcut ────────────────────────────────────────────────
+    if BACKEND_URL:
+        if not ref_audio:
+            yield None, "✗ Reference audio required."
+            return
+        ref_audio = _convert_audio_to_wav(ref_audio)
+        yield from _generate_remote(
+            (text or "").strip(), ref_audio,
+            (ref_text or "").strip(), float(temperature), int(top_k),
+        )
+        return
 
     if _tts is None:
         _log("generate: no model loaded — aborting", "ERROR")
@@ -662,13 +768,17 @@ def generate(text, ref_audio, ref_text, streaming, temperature, top_k):
 # ─── UI layout ────────────────────────────────────────────────────────────────
 
 def build_ui() -> gr.Blocks:
-    has_mps = torch.backends.mps.is_available()
-    has_cuda = torch.cuda.is_available()
+    has_mps  = _HAS_TORCH and _torch.backends.mps.is_available()
+    has_cuda = _HAS_TORCH and _torch.cuda.is_available()
 
-    default_backbone = (
-        "neuphonic/neutts-nano-q8-gguf" if (has_mps or has_cuda) else "neuphonic/neutts-nano"
-    )
-    default_device = "metal" if has_mps else ("cuda" if has_cuda else "cpu")
+    if BACKEND_URL:
+        default_backbone = "neuphonic/neutts-nano-q8-gguf"
+        default_device   = "cpu"
+    else:
+        default_backbone = (
+            "neuphonic/neutts-nano-q8-gguf" if (has_mps or has_cuda) else "neuphonic/neutts-nano"
+        )
+        default_device = "metal" if has_mps else ("cuda" if has_cuda else "cpu")
     default_codec = (
         "ONNX decoder  (fastest · CPU only)"
         if default_backbone.endswith("gguf")
