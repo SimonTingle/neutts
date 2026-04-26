@@ -7,6 +7,7 @@ import sys
 import time
 import traceback
 import warnings
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import gradio as gr
@@ -346,6 +347,53 @@ def transcribe_ref_audio(audio_path: str | None, model_label: str = WHISPER_MODE
         return f"⚠ Transcription failed: {e}"
 
 
+def validate_output(audio_tuple, original_text):
+    """Validate synthesized output by transcribing it and comparing to original text."""
+    if audio_tuple is None or original_text is None or original_text.strip() == "":
+        return "⚠ Need both synthesized audio and original transcript to validate."
+
+    if _whisper_model is None:
+        return "⚠ Whisper model not loaded — transcribe reference audio first."
+
+    try:
+        import soundfile as sf
+        if isinstance(audio_tuple, tuple):
+            sample_rate, audio_data = audio_tuple
+        else:
+            audio_data = audio_tuple
+            sample_rate = 24000
+
+        temp_wav = "/tmp/neutts_validate.wav"
+        sf.write(temp_wav, audio_data, sample_rate)
+        _log(f"validate: transcribing synthesized output...", "INFO")
+
+        result = _whisper_model.transcribe(temp_wav)
+        transcribed = result["text"].strip().lower()
+        original = original_text.strip().lower()
+
+        match_ratio = SequenceMatcher(None, original, transcribed).ratio()
+        accuracy_pct = int(match_ratio * 100)
+
+        report = f"**Output validation: {accuracy_pct}% match**\n\n"
+        report += f"**Original:** {original}\n\n"
+        report += f"**Transcribed:** {transcribed}\n\n"
+
+        if accuracy_pct >= 90:
+            report += "✓ Excellent — output is clear and matches input."
+        elif accuracy_pct >= 75:
+            report += "⚠ Good — minor differences detected."
+        elif accuracy_pct >= 50:
+            report += "✗ Poor — significant differences, check for garbling."
+        else:
+            report += "✗ Failed — output is garbled or unrecognizable."
+
+        _log(f"validate: {accuracy_pct}% match", "INFO")
+        return report
+    except Exception as e:
+        _log(f"validate: failed: {e}", "ERROR")
+        return f"⚠ Validation failed: {e}"
+
+
 def on_sample_select(choice):
     """Fill reference audio + transcript from a built-in sample speaker."""
     if choice == "— custom upload —" or choice not in _SAMPLE_SPEAKERS:
@@ -575,6 +623,12 @@ def build_ui() -> gr.Blocks:
                     label="Synthesised audio", type="numpy", interactive=False,
                 )
                 stats_md = gr.Markdown("")
+                with gr.Row():
+                    validate_btn = gr.Button(
+                        "Validate output (round-trip test)",
+                        size="sm", variant="secondary",
+                    )
+                validation_md = gr.Markdown("")
 
         # ── Events ──────────────────────────────────────────────────────────
         load_btn.click(
@@ -598,6 +652,11 @@ def build_ui() -> gr.Blocks:
             fn=generate,
             inputs=[input_text, ref_audio, ref_text, streaming_cb, temperature, top_k],
             outputs=[output_audio, stats_md],
+        )
+        validate_btn.click(
+            fn=validate_output,
+            inputs=[output_audio, ref_text],
+            outputs=validation_md,
         )
 
     return demo
