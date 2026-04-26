@@ -378,6 +378,19 @@ def generate(text, ref_audio, ref_text, streaming, temperature, top_k):
             stats = f"✓ {elapsed:.2f}s  ·  {audio_s:.2f}s audio  ·  RTF {rtf:.2f}{note}"
             yield (SAMPLE_RATE, wav.astype(np.float32)), stats
 
+    except ValueError as exc:
+        tb = traceback.format_exc()
+        _log(f"generate: inference FAILED\n{tb}", "ERROR")
+        if "No valid speech tokens" in str(exc):
+            msg = (
+                "✗ Model produced no speech tokens.\n\n"
+                "**Likely fix:** tick the **Stream output** checkbox — "
+                "GGUF models on Apple Metal work reliably in streaming mode. "
+                "Non-streaming may produce empty output on MPS."
+            )
+            yield None, msg
+        else:
+            yield None, f"✗ Generation failed:\n```\n{tb}\n```"
     except Exception:
         tb = traceback.format_exc()
         _log(f"generate: inference FAILED\n{tb}", "ERROR")
