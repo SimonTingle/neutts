@@ -7,6 +7,7 @@ import sys
 import time
 import traceback
 import warnings
+import shutil
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -489,6 +490,53 @@ def save_preset(preset_name, backbone, device, codec, temperature, top_k, stream
     return f"✓ Preset '{preset_name}' saved"
 
 
+def clear_model_cache():
+    """Delete all cached models (HuggingFace backbone, codec, Whisper) to free disk space."""
+    cache_dirs = [
+        Path.home() / ".cache" / "huggingface" / "hub",
+        Path.home() / ".cache" / "whisper",
+    ]
+
+    total_freed_kb = 0
+    deleted_items = []
+
+    for cache_dir in cache_dirs:
+        if not cache_dir.exists():
+            continue
+
+        try:
+            for item in cache_dir.iterdir():
+                try:
+                    if item.is_dir():
+                        size_kb = sum(
+                            f.stat().st_size for f in item.rglob("*") if f.is_file()
+                        ) // 1024
+                        shutil.rmtree(item)
+                        deleted_items.append(f"{item.name} ({size_kb} KB)")
+                        total_freed_kb += size_kb
+                    elif item.is_file():
+                        size_kb = item.stat().st_size // 1024
+                        item.unlink()
+                        deleted_items.append(f"{item.name} ({size_kb} KB)")
+                        total_freed_kb += size_kb
+                except Exception as e:
+                    _log(f"clear_cache: error deleting {item.name}: {e}", "WARN")
+
+        except Exception as e:
+            _log(f"clear_cache: error accessing {cache_dir}: {e}", "WARN")
+
+    total_freed_mb = total_freed_kb / 1024
+    if deleted_items:
+        report = f"✓ Freed **{total_freed_mb:.1f} MB**\n\n"
+        report += "**Deleted:**\n" + "\n".join(f"• {item}" for item in deleted_items[:20])
+        if len(deleted_items) > 20:
+            report += f"\n• ... and {len(deleted_items) - 20} more items"
+        _log(f"clear_cache: freed {total_freed_mb:.1f} MB", "INFO")
+        return report
+    else:
+        return "ℹ No cached models found — disk cache already clean."
+
+
 def on_sample_select(choice):
     """Fill reference audio + transcript from a built-in sample speaker."""
     if choice == "— custom upload —" or choice not in _SAMPLE_SPEAKERS:
@@ -674,6 +722,10 @@ def build_ui() -> gr.Blocks:
                 save_preset_btn = gr.Button("Save preset", size="sm", variant="secondary")
                 save_status = gr.Markdown("")
 
+                gr.Markdown("### Disk Cleanup")
+                clear_btn = gr.Button("🗑️ Clear all cached models", size="sm", variant="stop")
+                clear_status = gr.Markdown("")
+
             # ── Right: I/O ───────────────────────────────────────────────────
             with gr.Column(scale=2):
                 gr.Markdown("### Input")
@@ -755,6 +807,11 @@ def build_ui() -> gr.Blocks:
             fn=save_preset,
             inputs=[preset_name, backbone_dd, device_dd, codec_dd, temperature, top_k, streaming_cb],
             outputs=save_status,
+        )
+        clear_btn.click(
+            fn=clear_model_cache,
+            inputs=[],
+            outputs=clear_status,
         )
         load_btn.click(
             fn=load_model,
