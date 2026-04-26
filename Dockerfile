@@ -20,13 +20,16 @@ WORKDIR /app
 COPY . .
 
 # ── Python dependencies ───────────────────────────────────────────────────────
-# Thin frontend install — no torch, no neutts, no llama-cpp-python.
-# All inference is delegated to the HF Spaces backend via NEUTTS_BACKEND_URL.
-RUN uv pip install --system -r requirements-frontend.txt
+# Full install: core + ONNX runtime + Gradio UI + Whisper transcription.
+# cmake build step compiles espeak-ng data helpers.
+RUN uv pip install --system -e ".[onnx,ui,speech]"
+
+# ── llama-cpp-python (CPU build — no Metal/CUDA on CapRover) ─────────────────
+RUN uv pip install --system llama-cpp-python
 
 # ── Runtime config ────────────────────────────────────────────────────────────
-# Set NEUTTS_BACKEND_URL and NEUTTS_API_KEY in CapRover app environment vars.
-# Model cache not needed here — models live on the HF Spaces backend.
+# Models download on first use and persist via a CapRover volume at /root/.cache
+ENV HF_HOME=/root/.cache/huggingface
 
 EXPOSE 7860
 
