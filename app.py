@@ -696,8 +696,8 @@ def build_ui() -> gr.Blocks:
                     interactive=True,
                 )
                 with gr.Row():
-                    load_preset_btn = gr.Button("Load", size="sm", scale=1)
-                    preset_status = gr.Markdown("", scale=2)
+                    load_preset_btn = gr.Button("Load", size="sm")
+                preset_status = gr.Markdown("")
 
                 gr.Markdown("### Model")
                 backbone_dd = gr.Dropdown(ALL_MODELS, value=default_backbone, label="Backbone")
