@@ -470,10 +470,17 @@ class NeuTTS:
         ref_text = self._to_phones(ref_text)
         input_text = self._to_phones(input_text)
 
-        codes_str = "".join([f"<|speech_{idx}|>" for idx in ref_codes])
+        # Use int() to guarantee Python ints — PyTorch 0-dim tensors in f-strings
+        # produce "tensor(N)" which the model cannot parse as speech tokens.
+        codes_str = "".join([f"<|speech_{int(idx)}|>" for idx in ref_codes])
         prompt = (
             f"user: Convert the text to speech:<|TEXT_PROMPT_START|>{ref_text} {input_text}"
             f"<|TEXT_PROMPT_END|>\nassistant:<|SPEECH_GENERATION_START|>{codes_str}"
+        )
+        print(
+            f"[neutts] _infer_ggml: prompt_len={len(prompt)} "
+            f"ref_phones={repr(ref_text[:60])} input_phones={repr(input_text[:60])}",
+            flush=True,
         )
         output = self.backbone(
             prompt,
@@ -483,6 +490,11 @@ class NeuTTS:
             stop=["<|SPEECH_GENERATION_END|>"],
         )
         output_str = output["choices"][0]["text"]
+        print(
+            f"[neutts] _infer_ggml: output_len={len(output_str)} "
+            f"preview={repr(output_str[:120])}",
+            flush=True,
+        )
         return output_str
 
     def _infer_stream_ggml(
@@ -496,7 +508,7 @@ class NeuTTS:
         ref_text = self._to_phones(ref_text)
         input_text = self._to_phones(input_text)
 
-        codes_str = "".join([f"<|speech_{idx}|>" for idx in ref_codes])
+        codes_str = "".join([f"<|speech_{int(idx)}|>" for idx in ref_codes])
         prompt = (
             f"user: Convert the text to speech:<|TEXT_PROMPT_START|>{ref_text} {input_text}"
             f"<|TEXT_PROMPT_END|>\nassistant:<|SPEECH_GENERATION_START|>{codes_str}"
