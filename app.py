@@ -112,6 +112,61 @@ WHISPER_MODEL_CHOICES = [label for label, _ in WHISPER_MODELS]
 WHISPER_MODEL_DEFAULT = "base   — 74 MB  · default"
 _WHISPER_LABEL_TO_ID = {label: mid for label, mid in WHISPER_MODELS}
 
+# ─── Presets ──────────────────────────────────────────────────────────────────
+
+BUILT_IN_PRESETS = {
+    "🍎 Apple Silicon Metal (fast, streaming)": {
+        "backbone": "neuphonic/neutts-nano-q8-gguf",
+        "device": "metal",
+        "codec": "ONNX decoder  (fastest · CPU only)",
+        "temperature": 1.0,
+        "top_k": 50,
+        "streaming": True,
+    },
+    "⚡ Fast CPU (low latency)": {
+        "backbone": "neuphonic/neutts-nano-q8-gguf",
+        "device": "cpu",
+        "codec": "ONNX decoder  (fastest · CPU only)",
+        "temperature": 0.1,
+        "top_k": 0,
+        "streaming": True,
+    },
+    "🎨 Creative (varied output)": {
+        "backbone": "neuphonic/neutts-nano",
+        "device": "auto",
+        "codec": "NeuCodec  (GPU-capable)",
+        "temperature": 1.8,
+        "top_k": 50,
+        "streaming": False,
+    },
+    "🎯 Accurate (conservative)": {
+        "backbone": "neuphonic/neutts-nano",
+        "device": "auto",
+        "codec": "NeuCodec  (GPU-capable)",
+        "temperature": 0.3,
+        "top_k": 20,
+        "streaming": False,
+    },
+    "🖥️ GPU CUDA (PyTorch)": {
+        "backbone": "neuphonic/neutts-nano",
+        "device": "cuda",
+        "codec": "NeuCodec  (GPU-capable)",
+        "temperature": 1.0,
+        "top_k": 50,
+        "streaming": False,
+    },
+    "💾 High Quality (slower)": {
+        "backbone": "neuphonic/neutts-nano",
+        "device": "auto",
+        "codec": "NeuCodec  (GPU-capable)",
+        "temperature": 0.7,
+        "top_k": 100,
+        "streaming": False,
+    },
+}
+
+_saved_presets: dict[str, dict] = {}  # user-saved custom presets
+
 
 # ─── Audio format conversion ──────────────────────────────────────────────────
 
@@ -394,6 +449,46 @@ def validate_output(audio_tuple, original_text):
         return f"⚠ Validation failed: {e}"
 
 
+def load_preset(preset_name):
+    """Load a preset and return updates for all controls + success indicator."""
+    all_presets = {**BUILT_IN_PRESETS, **_saved_presets}
+    if preset_name not in all_presets:
+        return (gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), "⚠ Preset not found")
+
+    p = all_presets[preset_name]
+    _log(f"preset: loading '{preset_name}'", "INFO")
+
+    # Return updates for: backbone, device, codec, temperature, top_k, streaming, status
+    return (
+        gr.update(value=p.get("backbone", "neuphonic/neutts-nano")),
+        gr.update(value=p.get("device", "auto")),
+        gr.update(value=p.get("codec", "NeuCodec  (GPU-capable)")),
+        gr.update(value=p.get("temperature", 1.0)),
+        gr.update(value=p.get("top_k", 50)),
+        gr.update(value=p.get("streaming", False)),
+        "✓ Preset loaded",
+    )
+
+
+def save_preset(preset_name, backbone, device, codec, temperature, top_k, streaming):
+    """Save current settings as a custom preset."""
+    if not preset_name or preset_name.strip() == "":
+        return "⚠ Preset name cannot be empty"
+    if preset_name in BUILT_IN_PRESETS:
+        return "⚠ Cannot overwrite built-in presets"
+
+    _saved_presets[preset_name] = {
+        "backbone": backbone,
+        "device": device,
+        "codec": codec,
+        "temperature": float(temperature),
+        "top_k": int(top_k),
+        "streaming": bool(streaming),
+    }
+    _log(f"preset: saved '{preset_name}'", "INFO")
+    return f"✓ Preset '{preset_name}' saved"
+
+
 def on_sample_select(choice):
     """Fill reference audio + transcript from a built-in sample speaker."""
     if choice == "— custom upload —" or choice not in _SAMPLE_SPEAKERS:
@@ -545,6 +640,17 @@ def build_ui() -> gr.Blocks:
 
             # ── Left: model settings ─────────────────────────────────────────
             with gr.Column(scale=1, min_width=270):
+                gr.Markdown("### Presets")
+                preset_choices = list(BUILT_IN_PRESETS.keys())
+                preset_dd = gr.Dropdown(
+                    choices=preset_choices,
+                    label="Load preset",
+                    interactive=True,
+                )
+                with gr.Row():
+                    load_preset_btn = gr.Button("Load", size="sm", scale=1)
+                    preset_status = gr.Markdown("", scale=2)
+
                 gr.Markdown("### Model")
                 backbone_dd = gr.Dropdown(ALL_MODELS, value=default_backbone, label="Backbone")
                 device_dd   = gr.Dropdown(DEVICES, value=default_device, label="Device")
@@ -558,6 +664,15 @@ def build_ui() -> gr.Blocks:
                 gr.Markdown("### Sampling")
                 temperature = gr.Slider(0.1, 2.0, value=1.0, step=0.05, label="Temperature")
                 top_k       = gr.Slider(0, 100, value=50, step=1,  label="Top-K  (0 = disabled)")
+
+                gr.Markdown("### Save Preset")
+                preset_name = gr.Textbox(
+                    label="New preset name",
+                    placeholder="e.g. My custom voice",
+                    max_lines=1,
+                )
+                save_preset_btn = gr.Button("Save preset", size="sm", variant="secondary")
+                save_status = gr.Markdown("")
 
             # ── Right: I/O ───────────────────────────────────────────────────
             with gr.Column(scale=2):
@@ -631,6 +746,16 @@ def build_ui() -> gr.Blocks:
                 validation_md = gr.Markdown("")
 
         # ── Events ──────────────────────────────────────────────────────────
+        load_preset_btn.click(
+            fn=load_preset,
+            inputs=preset_dd,
+            outputs=[backbone_dd, device_dd, codec_dd, temperature, top_k, streaming_cb, preset_status],
+        )
+        save_preset_btn.click(
+            fn=save_preset,
+            inputs=[preset_name, backbone_dd, device_dd, codec_dd, temperature, top_k, streaming_cb],
+            outputs=save_status,
+        )
         load_btn.click(
             fn=load_model,
             inputs=[backbone_dd, device_dd, codec_dd],
