@@ -94,6 +94,22 @@ _ref_cache: dict[str, object] = {}   # audio file path → encoded ref codes
 _fallback_encoder = None              # NeuCodec loaded lazily for ONNX-only setups
 _converted_paths: dict[str, str] = {}  # original path → converted WAV path
 _whisper_model = None                 # cached Whisper model for auto-transcription
+_whisper_model_name: str = ""         # which model is currently loaded
+
+WHISPER_MODELS = [
+    ("tiny   — 39 MB  · fastest, rough",      "tiny"),
+    ("tiny.en — 39 MB  · English-only, faster", "tiny.en"),
+    ("base   — 74 MB  · default",             "base"),
+    ("base.en — 74 MB  · English-only",         "base.en"),
+    ("small  — 244 MB · better accuracy",     "small"),
+    ("small.en — 244 MB · English-only",       "small.en"),
+    ("medium — 769 MB · strong accuracy",     "medium"),
+    ("medium.en — 769 MB · English-only",      "medium.en"),
+    ("large-v3 — 1.5 GB · best (slow on CPU)", "large-v3"),
+]
+WHISPER_MODEL_CHOICES = [label for label, _ in WHISPER_MODELS]
+WHISPER_MODEL_DEFAULT = "base   — 74 MB  · default"
+_WHISPER_LABEL_TO_ID = {label: mid for label, mid in WHISPER_MODELS}
 
 
 # ─── Audio format conversion ──────────────────────────────────────────────────
@@ -287,9 +303,9 @@ def on_ref_text_change(text):
     return f"{n} chars", phones_str
 
 
-def transcribe_ref_audio(audio_path: str | None) -> str:
+def transcribe_ref_audio(audio_path: str | None, model_label: str = WHISPER_MODEL_DEFAULT) -> str:
     """Auto-transcribe reference audio using Whisper and return the text."""
-    global _whisper_model
+    global _whisper_model, _whisper_model_name
     if not audio_path:
         _log("transcribe: no audio path", "WARN")
         return ""
@@ -300,17 +316,26 @@ def transcribe_ref_audio(audio_path: str | None) -> str:
         return "⚠ openai-whisper not installed — run:  pip install openai-whisper"
 
     audio_path = _convert_audio_to_wav(audio_path)
+    model_id = _WHISPER_LABEL_TO_ID.get(model_label, "base")
 
-    if _whisper_model is None:
-        _log("transcribe: loading Whisper 'base' model (~74 MB, one-time download)...")
+    if _whisper_model is None or _whisper_model_name != model_id:
+        size_hint = {
+            "tiny": "~39 MB", "tiny.en": "~39 MB",
+            "base": "~74 MB", "base.en": "~74 MB",
+            "small": "~244 MB", "small.en": "~244 MB",
+            "medium": "~769 MB", "medium.en": "~769 MB",
+            "large-v3": "~1.5 GB",
+        }.get(model_id, "")
+        _log(f"transcribe: loading Whisper '{model_id}' model ({size_hint}, one-time download)...")
         try:
-            _whisper_model = _whisper_pkg.load_model("base")
-            _log("transcribe: Whisper model loaded")
+            _whisper_model = _whisper_pkg.load_model(model_id)
+            _whisper_model_name = model_id
+            _log(f"transcribe: Whisper '{model_id}' loaded")
         except Exception as e:
             _log(f"transcribe: model load failed: {e}", "ERROR")
             return f"⚠ Whisper load failed: {e}"
 
-    _log(f"transcribe: transcribing {Path(audio_path).name}...")
+    _log(f"transcribe: transcribing {Path(audio_path).name} with '{model_id}'...")
     try:
         result = _whisper_model.transcribe(audio_path)
         text = result["text"].strip()
@@ -521,9 +546,15 @@ def build_ui() -> gr.Blocks:
                 )
                 with gr.Row():
                     ref_text_info = gr.Markdown("0 chars")
+                    whisper_dd = gr.Dropdown(
+                        choices=WHISPER_MODEL_CHOICES,
+                        value=WHISPER_MODEL_DEFAULT,
+                        label="Whisper model",
+                        scale=2,
+                    )
                     transcribe_btn = gr.Button(
-                        "Auto-transcribe from audio",
-                        size="sm", variant="secondary",
+                        "Auto-transcribe",
+                        size="sm", variant="secondary", scale=1,
                     )
                 phoneme_preview = gr.Textbox(
                     label="Phoneme check — what espeak-ng sends to the model (verify syllables match your transcript)",
@@ -554,7 +585,7 @@ def build_ui() -> gr.Blocks:
         input_text.change(fn=on_text_change, inputs=input_text, outputs=text_info)
         ref_text.change(fn=on_ref_text_change, inputs=ref_text, outputs=[ref_text_info, phoneme_preview])
         ref_audio.change(fn=on_ref_audio_change, inputs=ref_audio, outputs=ref_audio_info)
-        transcribe_btn.click(fn=transcribe_ref_audio, inputs=ref_audio, outputs=ref_text)
+        transcribe_btn.click(fn=transcribe_ref_audio, inputs=[ref_audio, whisper_dd], outputs=ref_text)
 
         if _SAMPLE_SPEAKERS:
             sample_dd.change(
