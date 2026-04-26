@@ -36,7 +36,7 @@ def _log(msg: str, level: str = "INFO") -> None:
 SAMPLE_RATE = 24_000
 MAX_TEXT_CHARS = 500
 MIN_REF_SECS = 3.0
-MAX_REF_SECS = 20.0
+MAX_REF_SECS = 30.0
 
 GGUF_MODELS = [
     "neuphonic/neutts-nano-q8-gguf",
@@ -395,8 +395,10 @@ def build_ui() -> gr.Blocks:
     with gr.Blocks(title="NeuTTS") as demo:
         gr.Markdown("# NeuTTS — Local Voice Synthesis")
         gr.Markdown(
-            "On-device TTS with instant voice cloning. "
-            "Upload 3–20s of clean reference audio and a verbatim transcript of what is spoken."
+            "On-device TTS with instant voice cloning.  "
+            "**Text to synthesise** → the new words you want spoken.  "
+            "**Reference audio** → a 3–30s clip of the target voice.  "
+            "**Reference transcript** → type exactly what is said *in that clip* (not the new text)."
         )
 
         with gr.Row():
@@ -438,14 +440,14 @@ def build_ui() -> gr.Blocks:
                 with gr.Row():
                     with gr.Column():
                         ref_audio = gr.Audio(
-                            label="Reference audio  (3–20s, WAV/M4A/MP3/FLAC)",
+                            label="Reference audio  (3–30s, WAV/M4A/MP3/FLAC)",
                             type="filepath",
                             sources=["upload", "microphone"],
                         )
                         ref_audio_info = gr.Markdown("No file uploaded.")
                     ref_text = gr.Textbox(
-                        label="Reference transcript  (verbatim — exactly what is said)",
-                        placeholder="Exact words spoken in the reference audio…",
+                        label="⚠ Reference transcript — REQUIRED  (type exactly what is spoken in the audio above)",
+                        placeholder="e.g.  Hi, my name is June and I live in Darlington.",
                         lines=4,
                     )
 
