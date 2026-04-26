@@ -261,7 +261,7 @@ def build_ui() -> gr.Blocks:
         else "NeuCodec  (GPU-capable)"
     )
 
-    with gr.Blocks(title="NeuTTS", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(title="NeuTTS") as demo:
         gr.Markdown("# NeuTTS — Local Voice Synthesis")
         gr.Markdown(
             "On-device TTS with instant voice cloning. "
@@ -366,4 +366,5 @@ if __name__ == "__main__":
     p.add_argument("--share", action="store_true",   help="Create a public Gradio share link")
     args = p.parse_args()
 
-    build_ui().launch(server_name=args.host, server_port=args.port, share=args.share)
+    build_ui().launch(server_name=args.host, server_port=args.port, share=args.share,
+                      theme=gr.themes.Soft())
