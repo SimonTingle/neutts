@@ -269,6 +269,12 @@ def on_text_change(text):
     return msg
 
 
+def on_ref_text_change(text):
+    n = len(text or "")
+    _log(f"ref_text change: {n} chars — {repr((text or '')[:60])}")
+    return f"{n} chars"
+
+
 def on_sample_select(choice):
     """Fill reference audio + transcript from a built-in sample speaker."""
     if choice == "— custom upload —" or choice not in _SAMPLE_SPEAKERS:
@@ -309,8 +315,10 @@ def generate(text, ref_audio, ref_text, streaming, temperature, top_k):
     if not ok_r:
         errors.append(f"Reference audio: {msg_r}")
     if not ref_text:
-        _log("generate: ref_text is empty", "WARN")
-        errors.append("Reference transcript is empty.")
+        # Transcript is optional — model still generates without it, voice
+        # cloning accuracy may be slightly reduced.
+        _log("generate: ref_text empty — proceeding without reference transcript", "WARN")
+        ref_text = " "
 
     if errors:
         _log(f"generate: validation failed — {errors}", "ERROR")
@@ -445,13 +453,14 @@ def build_ui() -> gr.Blocks:
                             sources=["upload", "microphone"],
                         )
                         ref_audio_info = gr.Markdown("No file uploaded.")
-                    with gr.Column():
-                        ref_text = gr.Textbox(
-                            label="⚠ Reference transcript — REQUIRED  (type exactly what is spoken in the audio above)",
-                            placeholder="e.g.  Hi, my name is June and I live in Darlington.",
-                            lines=4,
-                            value="",
-                        )
+
+                ref_text = gr.Textbox(
+                    label="Reference transcript  (optional but improves accuracy — type the words spoken in the audio above)",
+                    placeholder="e.g.  Hi, my name is June and I live in Darlington.",
+                    lines=3,
+                    value="",
+                )
+                ref_text_info = gr.Markdown("0 chars")
 
                 streaming_cb = gr.Checkbox(
                     value=True,
@@ -472,6 +481,7 @@ def build_ui() -> gr.Blocks:
             outputs=model_status,
         )
         input_text.change(fn=on_text_change, inputs=input_text, outputs=text_info)
+        ref_text.change(fn=on_ref_text_change, inputs=ref_text, outputs=ref_text_info)
         ref_audio.change(fn=on_ref_audio_change, inputs=ref_audio, outputs=ref_audio_info)
 
         if _SAMPLE_SPEAKERS:
