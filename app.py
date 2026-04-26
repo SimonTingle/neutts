@@ -93,6 +93,7 @@ _loaded_cfg: dict = {}
 _ref_cache: dict[str, object] = {}   # audio file path → encoded ref codes
 _fallback_encoder = None              # NeuCodec loaded lazily for ONNX-only setups
 _converted_paths: dict[str, str] = {}  # original path → converted WAV path
+_whisper_model = None                 # cached Whisper model for auto-transcription
 
 
 # ─── Audio format conversion ──────────────────────────────────────────────────
@@ -272,7 +273,52 @@ def on_text_change(text):
 def on_ref_text_change(text):
     n = len(text or "")
     _log(f"ref_text change: {n} chars — {repr((text or '')[:60])}")
-    return f"{n} chars"
+    phones_str = ""
+    if text and text.strip():
+        if _tts is not None:
+            try:
+                phones_str = _tts._to_phones(text.strip())
+                n_tokens = len(phones_str.split())
+                _log(f"  phonemes ({n_tokens} tokens): {repr(phones_str[:100])}")
+            except Exception as e:
+                phones_str = f"(phonemisation error: {e})"
+        else:
+            phones_str = "(load a model to preview phonemes)"
+    return f"{n} chars", phones_str
+
+
+def transcribe_ref_audio(audio_path: str | None) -> str:
+    """Auto-transcribe reference audio using Whisper and return the text."""
+    global _whisper_model
+    if not audio_path:
+        _log("transcribe: no audio path", "WARN")
+        return ""
+    try:
+        import whisper as _whisper_pkg
+    except ImportError:
+        _log("transcribe: openai-whisper not installed", "WARN")
+        return "⚠ openai-whisper not installed — run:  pip install openai-whisper"
+
+    audio_path = _convert_audio_to_wav(audio_path)
+
+    if _whisper_model is None:
+        _log("transcribe: loading Whisper 'base' model (~74 MB, one-time download)...")
+        try:
+            _whisper_model = _whisper_pkg.load_model("base")
+            _log("transcribe: Whisper model loaded")
+        except Exception as e:
+            _log(f"transcribe: model load failed: {e}", "ERROR")
+            return f"⚠ Whisper load failed: {e}"
+
+    _log(f"transcribe: transcribing {Path(audio_path).name}...")
+    try:
+        result = _whisper_model.transcribe(audio_path)
+        text = result["text"].strip()
+        _log(f"transcribe: result = {repr(text)}")
+        return text
+    except Exception as e:
+        _log(f"transcribe: failed: {e}", "ERROR")
+        return f"⚠ Transcription failed: {e}"
 
 
 def on_sample_select(choice):
@@ -468,12 +514,24 @@ def build_ui() -> gr.Blocks:
                         ref_audio_info = gr.Markdown("No file uploaded.")
 
                 ref_text = gr.Textbox(
-                    label="Reference transcript  (optional but improves accuracy — type the words spoken in the audio above)",
+                    label="Reference transcript  (type the words spoken in the audio above, or use Auto-transcribe)",
                     placeholder="e.g.  Hi, my name is June and I live in Darlington.",
                     lines=3,
                     value="",
                 )
-                ref_text_info = gr.Markdown("0 chars")
+                with gr.Row():
+                    ref_text_info = gr.Markdown("0 chars")
+                    transcribe_btn = gr.Button(
+                        "Auto-transcribe from audio",
+                        size="sm", variant="secondary",
+                    )
+                phoneme_preview = gr.Textbox(
+                    label="Phoneme check — what espeak-ng sends to the model (verify syllables match your transcript)",
+                    interactive=False,
+                    lines=2,
+                    value="",
+                    placeholder="Phonemes appear here when a model is loaded and transcript is typed…",
+                )
 
                 streaming_cb = gr.Checkbox(
                     value=True,
@@ -494,8 +552,9 @@ def build_ui() -> gr.Blocks:
             outputs=model_status,
         )
         input_text.change(fn=on_text_change, inputs=input_text, outputs=text_info)
-        ref_text.change(fn=on_ref_text_change, inputs=ref_text, outputs=ref_text_info)
+        ref_text.change(fn=on_ref_text_change, inputs=ref_text, outputs=[ref_text_info, phoneme_preview])
         ref_audio.change(fn=on_ref_audio_change, inputs=ref_audio, outputs=ref_audio_info)
+        transcribe_btn.click(fn=transcribe_ref_audio, inputs=ref_audio, outputs=ref_text)
 
         if _SAMPLE_SPEAKERS:
             sample_dd.change(
