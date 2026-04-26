@@ -130,10 +130,14 @@ def _convert_audio_to_wav(path: str) -> str:
             _log(f"  audio: ffmpeg conversion FAILED (exit {result.returncode})", "ERROR")
             for line in result.stderr.strip().splitlines():
                 _log(f"    ffmpeg: {line}", "ERROR")
+            if "Library not loaded" in result.stderr or "dyld" in result.stderr:
+                _log("  audio: broken ffmpeg install — fix with: brew reinstall x265 && brew reinstall ffmpeg", "WARN")
+            _log("  audio: falling back to original file — librosa will attempt to load it")
     except FileNotFoundError:
         _log("  audio: ffmpeg not found — install with: brew install ffmpeg", "WARN")
-        _log("  audio: falling back to audioread (may be slower and less reliable)", "WARN")
+        _log("  audio: falling back to librosa audioread (file may still load)", "WARN")
 
+    _log(f"  audio: using original file as fallback — librosa will attempt to load {Path(path).name}")
     _converted_paths[path] = path  # cache original so we don't retry on every keystroke
     return path
 
