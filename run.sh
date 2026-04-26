@@ -4,6 +4,12 @@
 # Sets up a uv-managed virtual environment, compiles llama-cpp-python with the
 # right hardware backend for your platform, then starts the Gradio UI.
 #
+# Installed extras:
+#   onnx    — ONNX runtime for fast CPU inference
+#   ui      — Gradio web interface
+#   speech  — openai-whisper for auto-transcription of reference audio
+#             (Whisper 'base' model, ~74 MB, downloads on first use)
+#
 # Usage:
 #   ./run.sh                      # start on http://127.0.0.1:7860
 #   ./run.sh --port 8080          # custom port
@@ -351,10 +357,11 @@ create_venv() {
 METAL_STAMP=".venv/.llama_metal"
 
 install_deps() {
-    step "Installing Python dependencies..."
-    uv pip install -e ".[onnx,ui]" \
+    step "Installing Python dependencies (core + ONNX + UI + speech transcription)..."
+    uv pip install -e ".[onnx,ui,speech]" \
         || die "Dependency install failed.  Check the error above."
-    info "Core dependencies installed."
+    info "Core dependencies installed (includes openai-whisper for auto-transcription)."
+    info "Note: Whisper 'base' model (~74 MB) downloads on first use of 'Auto-transcribe'."
 
     if $IS_MACOS_ARM; then
         # ── Apple Silicon: compile llama-cpp-python with Metal ───────────────
