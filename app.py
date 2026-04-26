@@ -445,11 +445,13 @@ def build_ui() -> gr.Blocks:
                             sources=["upload", "microphone"],
                         )
                         ref_audio_info = gr.Markdown("No file uploaded.")
-                    ref_text = gr.Textbox(
-                        label="⚠ Reference transcript — REQUIRED  (type exactly what is spoken in the audio above)",
-                        placeholder="e.g.  Hi, my name is June and I live in Darlington.",
-                        lines=4,
-                    )
+                    with gr.Column():
+                        ref_text = gr.Textbox(
+                            label="⚠ Reference transcript — REQUIRED  (type exactly what is spoken in the audio above)",
+                            placeholder="e.g.  Hi, my name is June and I live in Darlington.",
+                            lines=4,
+                            value="",
+                        )
 
                 streaming_cb = gr.Checkbox(
                     value=True,
