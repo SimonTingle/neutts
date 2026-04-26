@@ -218,9 +218,12 @@ class NeuTTS:
             self._is_quantized_model = True
 
         else:
-            # Use float16 on GPU backends for lower memory and faster inference.
-            # MPS (Apple Metal) supports float16; bfloat16 is not reliably supported.
-            if backbone_device in ("cuda", "mps"):
+            # Use float16 on CUDA for lower memory and faster inference.
+            # MPS (Apple Metal) float16 can produce logits that overflow the
+            # float16 range (~65504) → inf → nan probabilities → multinomial
+            # crash. Use float32 on MPS for correctness; it still benefits
+            # from Metal GPU acceleration.
+            if backbone_device == "cuda":
                 dtype = torch.float16
             else:
                 dtype = torch.float32
