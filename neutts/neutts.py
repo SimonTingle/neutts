@@ -581,7 +581,9 @@ class NeuTTS:
             processed_recon = _linear_overlap_add(audio_cache, stride=self.streaming_stride_samples)
             processed_recon = processed_recon[n_decoded_samples:]
 
-            if self.watermarker is not None:
+            # The STFT inside the watermarker requires padding < input length (1024 per side).
+            # Final chunks can be very short (a few codec frames), so guard before applying.
+            if self.watermarker is not None and len(processed_recon) > 2048:
                 processed_recon = self.watermarker.apply_watermark(
                     processed_recon, sample_rate=24_000
                 )
