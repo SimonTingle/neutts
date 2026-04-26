@@ -148,6 +148,46 @@ require_espeak() {
     fi
 }
 
+# ─── Require: ffmpeg ─────────────────────────────────────────────────────────
+# ffmpeg is required by Gradio 6 to accept M4A/AAC/MP3 uploads and convert
+# them for browser playback. Without it, non-WAV uploads silently return None.
+
+require_ffmpeg() {
+    if command -v ffmpeg &>/dev/null; then
+        return
+    fi
+
+    warn "ffmpeg not found — required for M4A/AAC/MP3 audio upload support."
+
+    if [[ "$OS" == "Darwin" ]]; then
+        if command -v brew &>/dev/null; then
+            info "Installing ffmpeg via Homebrew..."
+            brew install ffmpeg \
+                || die "Homebrew install failed.  Run manually: brew install ffmpeg"
+        else
+            die "ffmpeg is required for audio format support and Homebrew is not installed.
+  Install Homebrew first:  https://brew.sh
+  Then run:  brew install ffmpeg"
+        fi
+
+    elif [[ "$OS" == "Linux" ]]; then
+        info "Attempting to install ffmpeg..."
+        if command -v apt-get &>/dev/null; then
+            sudo apt-get install -y ffmpeg
+        elif command -v dnf &>/dev/null; then
+            sudo dnf install -y ffmpeg
+        elif command -v pacman &>/dev/null; then
+            sudo pacman -S --noconfirm ffmpeg
+        else
+            die "Cannot auto-install ffmpeg.  Install it with your package manager or from:
+  https://ffmpeg.org/download.html"
+        fi
+
+    else
+        die "ffmpeg not found.  Install from: https://ffmpeg.org/download.html"
+    fi
+}
+
 # ─── Create virtual environment ───────────────────────────────────────────────
 
 create_venv() {
@@ -255,6 +295,7 @@ main() {
     require_uv
     require_python
     require_espeak
+    require_ffmpeg
     create_venv
     install_deps
     check_port
