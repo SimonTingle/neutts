@@ -114,6 +114,35 @@ def _remote_headers() -> dict:
     return h
 
 
+def _backend_led_html(connected: bool) -> str:
+    if not BACKEND_URL:
+        return ""
+    color  = "#22c55e" if connected else "#ef4444"
+    pulse  = "hf-led-pulse" if connected else ""
+    label  = "HF connected" if connected else "HF unreachable"
+    return (
+        f"<style>"
+        f".hf-led{{display:inline-block;width:9px;height:9px;border-radius:50%;"
+        f"background:{color};box-shadow:0 0 5px {color};vertical-align:middle;margin-right:6px;}}"
+        f"@keyframes hf-pulse{{0%,100%{{opacity:1}}50%{{opacity:.35}}}}"
+        f".hf-led-pulse{{animation:hf-pulse 2s ease-in-out infinite;}}"
+        f"</style>"
+        f"<span class='hf-led {pulse}'></span>"
+        f"<span style='font-size:0.78rem;color:#9ca3af;vertical-align:middle'>{label}</span>"
+    )
+
+
+def check_backend_led() -> str:
+    if not BACKEND_URL:
+        return ""
+    try:
+        import requests
+        r = requests.get(f"{BACKEND_URL}/health", headers=_remote_headers(), timeout=8)
+        return _backend_led_html(r.ok)
+    except Exception:
+        return _backend_led_html(False)
+
+
 # ─── Singleton state ──────────────────────────────────────────────────────────
 
 _tts = None
@@ -786,7 +815,10 @@ def build_ui() -> gr.Blocks:
     )
 
     with gr.Blocks(title="NeuTTS") as demo:
-        gr.Markdown("# NeuTTS — Local Voice Synthesis")
+        with gr.Row():
+            gr.Markdown("# NeuTTS — Local Voice Synthesis")
+            if BACKEND_URL:
+                backend_led = gr.HTML(value=check_backend_led(), every=30)
         gr.Markdown(
             "On-device TTS with instant voice cloning.  "
             "**Text to synthesise** → the new words you want spoken.  "
