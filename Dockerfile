@@ -19,6 +19,11 @@ COPY CMakeLists.txt ./
 COPY README.md ./
 
 RUN uv pip install --system -e ".[onnx,speech]"
+# After: Add these env vars
+
+ENV CMAKE_BUILD_PARALLEL_LEVEL=1
+ENV LLAMA_CPP_LIB=ON
+
 RUN uv pip install --system llama-cpp-python fastapi "uvicorn[standard]" soundfile
 
 # ── Bake models into image so restarts are instant ───────────────────────────
