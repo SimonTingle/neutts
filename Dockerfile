@@ -37,7 +37,7 @@ COPY server.py ./server.py
 
 ENV NEUTTS_BACKBONE=neuphonic/neutts-nano-q8-gguf
 ENV NEUTTS_DEVICE=cpu
-ENV NEUTTS_CODEC=neuphonic/neucodec-onnx-decoder
+ENV NEUTTS_CODEC=neuphonic/neucodec
 ENV PORT=7860
 
 EXPOSE 7860
