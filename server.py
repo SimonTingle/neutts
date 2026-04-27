@@ -84,7 +84,7 @@ async def generate(
         tmp_path = tmp.name
 
     try:
-        ref_codes, _ = _tts.encode_reference(tmp_path)
+        ref_codes = _tts.encode_reference(tmp_path)
         wav = _tts.infer(
             text.strip(),
             ref_codes,
