@@ -1,0 +1,7 @@
+# CapRover thin frontend — no torch, no neutts, no heavy ML deps.
+# app.py detects NEUTTS_BACKEND_URL and calls the HF Spaces API instead.
+gradio>=4.0.0
+numpy~=2.2.6
+soundfile==0.13.1
+librosa==0.11.0
+requests>=2.32.0
