@@ -16,6 +16,7 @@ COPY neutts/ ./neutts/
 COPY neuttsair/ ./neuttsair/
 COPY __init__.py ./
 COPY CMakeLists.txt ./
+COPY README.md ./
 
 RUN uv pip install --system -e ".[onnx,speech]"
 RUN uv pip install --system llama-cpp-python fastapi "uvicorn[standard]" soundfile
