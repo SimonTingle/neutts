@@ -1,0 +1,32 @@
+# Virtual environment — rebuilt inside Docker
+.venv/
+
+# Git history — not needed in image
+.git/
+.github/
+
+# Local model cache — mounted as CapRover volume at runtime
+.cache/
+
+# HF Spaces backend — not used in CapRover deployment
+backend/
+
+# Sample audio binaries — gitignored anyway, excluded here for local builds
+samples/*.wav
+samples/*.pt
+
+# Dev / test artefacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Generated audio output
+output.wav
+
+# Editor / OS noise
+.DS_Store
+*.swp

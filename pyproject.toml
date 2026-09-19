@@ -26,7 +26,9 @@ dependencies = [
 [project.optional-dependencies]
 llama = ["llama-cpp-python"]
 onnx = ["onnxruntime"]
-all = ["llama-cpp-python", "onnxruntime"]
+ui = ["gradio>=4.0.0"]
+speech = ["openai-whisper"]   # auto-transcription for reference audio
+all = ["llama-cpp-python", "onnxruntime", "gradio>=4.0.0", "openai-whisper"]
 
 [tool.scikit-build]
 # Include the espeak-ng-data directory that cmake copies into the package

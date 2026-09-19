@@ -11,6 +11,40 @@ from neucodec import NeuCodec, DistillNeuCodec
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from .phonemizers import BasePhonemizer, CUSTOM_PHONEMIZERS
 
+# Compiled once at import; reused by every _decode / streaming call.
+_SPEECH_TOKEN_RE = re.compile(r"<\|speech_(\d+)\|>")
+
+
+def _normalize_device(device: str) -> str:
+    """
+    Resolve a device string to a canonical torch device name.
+
+    Accepted values:
+      "auto"   – picks CUDA > MPS (Apple Metal) > CPU
+      "gpu"    – legacy alias: picks CUDA > MPS > CPU
+      "metal"  – explicit Apple Metal alias, maps to "mps"
+      "mps"    – Apple Metal Performance Shaders
+      "cuda"   – NVIDIA CUDA
+      "cpu"    – CPU
+    """
+    device = device.lower().strip()
+    if device == "auto":
+        if torch.cuda.is_available():
+            return "cuda"
+        if torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+    if device == "metal":
+        return "mps"
+    if device == "gpu":
+        # Legacy GGUF alias — prefer CUDA, fall back to MPS then CPU
+        if torch.cuda.is_available():
+            return "cuda"
+        if torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+    return device
+
 
 BACKBONE_LANGUAGE_MAP = {
     # en models
@@ -92,6 +126,10 @@ class NeuTTS:
         self._is_quantized_model = False
         self._is_onnx_codec = False
 
+        # Resolved device strings (canonical torch names)
+        self._backbone_device = _normalize_device(backbone_device)
+        self._codec_device = _normalize_device(codec_device)
+
         # HF tokenizer
         self.tokenizer = None
 
@@ -99,9 +137,9 @@ class NeuTTS:
         print("Loading phonemizer...")
         self._load_phonemizer(language, backbone_repo)
 
-        self._load_backbone(backbone_repo, backbone_device)
+        self._load_backbone(backbone_repo, self._backbone_device)
 
-        self._load_codec(codec_repo, codec_device)
+        self._load_codec(codec_repo, self._codec_device)
 
         # Load watermarker (optional)
         try:
@@ -142,20 +180,27 @@ class NeuTTS:
                 raise ImportError(
                     "Failed to import `llama_cpp`. "
                     "Please install it with:\n"
-                    "    pip install llama-cpp-python"
+                    "    pip install llama-cpp-python\n"
+                    "For Apple Metal (macOS), compile with:\n"
+                    "    CMAKE_ARGS='-DGGML_METAL=ON' pip install llama-cpp-python"
                 ) from e
 
             seed = random.randint(0, 2**32)
             print(f"Using seed {seed}")
 
+            # Metal (MPS) and CUDA both offload all layers to the GPU.
+            # Flash attention is CUDA-only — it must NOT be enabled on Metal.
+            use_gpu_layers = backbone_device in ("cuda", "mps")
+            use_flash_attn = backbone_device == "cuda"
+
             if os.path.isfile(backbone_repo):
                 self.backbone = Llama(
                     model_path=backbone_repo,
                     verbose=False,
-                    n_gpu_layers=-1 if backbone_device == "gpu" else 0,
+                    n_gpu_layers=-1 if use_gpu_layers else 0,
                     n_ctx=self.max_context,
                     mlock=True,
-                    flash_attn=True if backbone_device == "gpu" else False,
+                    flash_attn=use_flash_attn,
                     seed=seed,
                 )
             else:
@@ -163,20 +208,51 @@ class NeuTTS:
                     repo_id=backbone_repo,
                     filename="*.gguf",
                     verbose=False,
-                    n_gpu_layers=-1 if backbone_device == "gpu" else 0,
+                    n_gpu_layers=-1 if use_gpu_layers else 0,
                     n_ctx=self.max_context,
                     mlock=True,
-                    flash_attn=True if backbone_device == "gpu" else False,
+                    flash_attn=use_flash_attn,
                     seed=seed,
                 )
 
             self._is_quantized_model = True
 
         else:
+            # Use float16 on CUDA for lower memory and faster inference.
+            # MPS (Apple Metal) float16 can produce logits that overflow the
+            # float16 range (~65504) → inf → nan probabilities → multinomial
+            # crash. Use float32 on MPS for correctness; it still benefits
+            # from Metal GPU acceleration.
+            if backbone_device == "cuda":
+                dtype = torch.float16
+            else:
+                dtype = torch.float32
+
             self.tokenizer = AutoTokenizer.from_pretrained(backbone_repo)
-            self.backbone = AutoModelForCausalLM.from_pretrained(backbone_repo).to(
-                torch.device(backbone_device)
+            self.backbone = AutoModelForCausalLM.from_pretrained(
+                backbone_repo, torch_dtype=dtype
+            ).to(torch.device(backbone_device))
+
+            # Cache special token IDs and the constant prompt template so
+            # _apply_chat_template and _infer_torch pay zero tokenizer
+            # overhead per inference call.
+            self._tok_speech_end = self.tokenizer.convert_tokens_to_ids(
+                "<|SPEECH_GENERATION_END|>"
             )
+            self._tok_speech_replace = self.tokenizer.convert_tokens_to_ids("<|SPEECH_REPLACE|>")
+            self._tok_speech_gen_start = self.tokenizer.convert_tokens_to_ids(
+                "<|SPEECH_GENERATION_START|>"
+            )
+            self._tok_text_replace = self.tokenizer.convert_tokens_to_ids("<|TEXT_REPLACE|>")
+            self._tok_text_prompt_start = self.tokenizer.convert_tokens_to_ids(
+                "<|TEXT_PROMPT_START|>"
+            )
+            self._tok_text_prompt_end = self.tokenizer.convert_tokens_to_ids("<|TEXT_PROMPT_END|>")
+            _chat = (
+                "user: Convert the text to speech:<|TEXT_REPLACE|>\n"
+                "assistant:<|SPEECH_REPLACE|>"
+            )
+            self._prompt_template_ids = self.tokenizer.encode(_chat)
 
     def _load_codec(self, codec_repo, codec_device):
 
@@ -203,8 +279,11 @@ class NeuTTS:
                 self.codec.eval().to(codec_device)
             case "neuphonic/neucodec-onnx-decoder" | "neuphonic/neucodec-onnx-decoder-int8":
 
-                if codec_device != "cpu":
-                    raise ValueError("Onnx decoder only currently runs on CPU.")
+                if codec_device not in ("cpu", "mps"):
+                    raise ValueError(
+                        "The ONNX decoder supports 'cpu' and 'mps' (Apple Metal) only. "
+                        "For NVIDIA GPU inference use the standard neucodec codec with codec_device='cuda'."
+                    )
 
                 try:
                     from neucodec import NeuCodecOnnxDecoder
@@ -217,6 +296,20 @@ class NeuTTS:
                 self.codec = NeuCodecOnnxDecoder.from_pretrained(codec_repo)
                 self._is_onnx_codec = True
 
+                if codec_device == "mps":
+                    try:
+                        import onnxruntime as ort
+                        available = ort.get_available_providers()
+                        if "CoreMLExecutionProvider" in available:
+                            warnings.warn(
+                                "CoreML execution provider is available. "
+                                "Re-instantiate the ONNX session manually with "
+                                "providers=['CoreMLExecutionProvider', 'CPUExecutionProvider'] "
+                                "for Neural Engine acceleration."
+                            )
+                    except ImportError:
+                        pass
+
             case _:
                 raise ValueError(
                     "Invalid codec repo! Must be one of:"
@@ -224,24 +317,33 @@ class NeuTTS:
                     " 'neuphonic/neucodec-onnx-decoder'."
                 )
 
-    def infer(self, text: str, ref_codes: np.ndarray | torch.Tensor, ref_text: str) -> np.ndarray:
+    def infer(
+        self,
+        text: str,
+        ref_codes: np.ndarray | torch.Tensor,
+        ref_text: str,
+        temperature: float = 1.0,
+        top_k: int = 50,
+    ) -> np.ndarray:
         """
         Perform inference to generate speech from text using the TTS model and reference audio.
 
         Args:
             text (str): Input text to be converted to speech.
             ref_codes (np.ndarray | torch.tensor): Encoded reference.
-            ref_text (str): Reference text for reference audio. Defaults to None.
+            ref_text (str): Reference text for reference audio.
+            temperature (float): Sampling temperature. Lower = more deterministic.
+            top_k (int): Top-k sampling. 0 disables top-k filtering.
         Returns:
             np.ndarray: Generated speech waveform.
         """
 
         # Generate tokens
         if self._is_quantized_model:
-            output_str = self._infer_ggml(ref_codes, ref_text, text)
+            output_str = self._infer_ggml(ref_codes, ref_text, text, temperature, top_k)
         else:
             prompt_ids = self._apply_chat_template(ref_codes, ref_text, text)
-            output_str = self._infer_torch(prompt_ids)
+            output_str = self._infer_torch(prompt_ids, temperature, top_k)
 
         # Decode
         wav = self._decode(output_str)
@@ -254,7 +356,12 @@ class NeuTTS:
         return watermarked_wav
 
     def infer_stream(
-        self, text: str, ref_codes: np.ndarray | torch.Tensor, ref_text: str
+        self,
+        text: str,
+        ref_codes: np.ndarray | torch.Tensor,
+        ref_text: str,
+        temperature: float = 1.0,
+        top_k: int = 50,
     ) -> Generator[np.ndarray, None, None]:
         """
         Perform streaming inference to generate speech from
@@ -263,13 +370,15 @@ class NeuTTS:
         Args:
             text (str): Input text to be converted to speech.
             ref_codes (np.ndarray | torch.tensor): Encoded reference.
-            ref_text (str): Reference text for reference audio. Defaults to None.
+            ref_text (str): Reference text for reference audio.
+            temperature (float): Sampling temperature. Lower = more deterministic.
+            top_k (int): Top-k sampling. 0 disables top-k filtering.
         Yields:
             np.ndarray: Generated speech waveform.
         """
 
         if self._is_quantized_model:
-            return self._infer_stream_ggml(ref_codes, ref_text, text)
+            return self._infer_stream_ggml(ref_codes, ref_text, text, temperature, top_k)
 
         else:
             raise NotImplementedError("Streaming is not implemented for the torch backend!")
@@ -277,33 +386,29 @@ class NeuTTS:
     def encode_reference(self, ref_audio_path: str | Path):
         wav, _ = librosa.load(ref_audio_path, sr=16000, mono=True)
         wav_tensor = torch.from_numpy(wav).float().unsqueeze(0).unsqueeze(0)  # [1, 1, T]
+        if not self._is_onnx_codec:
+            wav_tensor = wav_tensor.to(self.codec.device)
         with torch.no_grad():
             ref_codes = self.codec.encode_code(audio_or_path=wav_tensor).squeeze(0).squeeze(0)
         return ref_codes
 
-    def _decode(self, codes: str):
-
-        # Extract speech token IDs using regex
-        speech_ids = [int(num) for num in re.findall(r"<\|speech_(\d+)\|>", codes)]
-
-        if len(speech_ids) > 0:
-
-            # Onnx decode
-            if self._is_onnx_codec:
-                codes = np.array(speech_ids, dtype=np.int32)[np.newaxis, np.newaxis, :]
-                recon = self.codec.decode_code(codes)
-
-            # Torch decode
-            else:
-                with torch.no_grad():
-                    codes = torch.tensor(speech_ids, dtype=torch.long)[None, None, :].to(
-                        self.codec.device
-                    )
-                    recon = self.codec.decode_code(codes).cpu().numpy()
-
-            return recon[0, 0, :]
-        else:
+    def _decode(self, codes: str) -> np.ndarray:
+        speech_ids = [int(m) for m in _SPEECH_TOKEN_RE.findall(codes)]
+        if not speech_ids:
             raise ValueError("No valid speech tokens found in the output.")
+        return self._decode_from_ids(speech_ids)
+
+    def _decode_from_ids(self, speech_ids: list[int]) -> np.ndarray:
+        if self._is_onnx_codec:
+            codes = np.array(speech_ids, dtype=np.int32)[np.newaxis, np.newaxis, :]
+            recon = self.codec.decode_code(codes)
+        else:
+            with torch.no_grad():
+                codes = torch.tensor(speech_ids, dtype=torch.long)[None, None, :].to(
+                    self.codec.device
+                )
+                recon = self.codec.decode_code(codes).cpu().numpy()
+        return recon[0, 0, :]
 
     def _to_phones(self, text: str) -> str:
         phones = self.phonemizer.phonemize([text])
@@ -316,43 +421,38 @@ class NeuTTS:
     ) -> list[int]:
 
         input_text = self._to_phones(ref_text) + " " + self._to_phones(input_text)
-        speech_replace = self.tokenizer.convert_tokens_to_ids("<|SPEECH_REPLACE|>")
-        speech_gen_start = self.tokenizer.convert_tokens_to_ids("<|SPEECH_GENERATION_START|>")
-        text_replace = self.tokenizer.convert_tokens_to_ids("<|TEXT_REPLACE|>")
-        text_prompt_start = self.tokenizer.convert_tokens_to_ids("<|TEXT_PROMPT_START|>")
-        text_prompt_end = self.tokenizer.convert_tokens_to_ids("<|TEXT_PROMPT_END|>")
-
         input_ids = self.tokenizer.encode(input_text, add_special_tokens=False)
-        chat = """user: Convert the text to speech:<|TEXT_REPLACE|>\nassistant:<|SPEECH_REPLACE|>"""
-        ids = self.tokenizer.encode(chat)
 
-        text_replace_idx = ids.index(text_replace)
+        ids = list(self._prompt_template_ids)
+
+        text_replace_idx = ids.index(self._tok_text_replace)
         ids = (
             ids[:text_replace_idx]
-            + [text_prompt_start]
+            + [self._tok_text_prompt_start]
             + input_ids
-            + [text_prompt_end]
+            + [self._tok_text_prompt_end]
             + ids[text_replace_idx + 1 :]  # noqa
         )
 
-        speech_replace_idx = ids.index(speech_replace)
+        speech_replace_idx = ids.index(self._tok_speech_replace)
         codes_str = "".join([f"<|speech_{i}|>" for i in ref_codes])
         codes = self.tokenizer.encode(codes_str, add_special_tokens=False)
-        ids = ids[:speech_replace_idx] + [speech_gen_start] + list(codes)
+        ids = ids[:speech_replace_idx] + [self._tok_speech_gen_start] + list(codes)
 
         return ids
 
-    def _infer_torch(self, prompt_ids: list[int]) -> str:
+    def _infer_torch(
+        self, prompt_ids: list[int], temperature: float = 1.0, top_k: int = 50
+    ) -> str:
         prompt_tensor = torch.tensor(prompt_ids).unsqueeze(0).to(self.backbone.device)
-        speech_end_id = self.tokenizer.convert_tokens_to_ids("<|SPEECH_GENERATION_END|>")
         with torch.no_grad():
             output_tokens = self.backbone.generate(
                 prompt_tensor,
-                max_length=self.max_context,
-                eos_token_id=speech_end_id,
+                max_new_tokens=self.max_context,
+                eos_token_id=self._tok_speech_end,
                 do_sample=True,
-                temperature=1.0,
-                top_k=50,
+                temperature=temperature,
+                top_k=top_k,
                 use_cache=True,
                 min_new_tokens=50,
             )
@@ -362,55 +462,83 @@ class NeuTTS:
         )
         return output_str
 
-    def _infer_ggml(self, ref_codes: list[int], ref_text: str, input_text: str) -> str:
+    def _infer_ggml(
+        self,
+        ref_codes: list[int],
+        ref_text: str,
+        input_text: str,
+        temperature: float = 1.0,
+        top_k: int = 50,
+    ) -> str:
         ref_text = self._to_phones(ref_text)
         input_text = self._to_phones(input_text)
 
-        codes_str = "".join([f"<|speech_{idx}|>" for idx in ref_codes])
+        # Use int() to guarantee Python ints — PyTorch 0-dim tensors in f-strings
+        # produce "tensor(N)" which the model cannot parse as speech tokens.
+        codes_str = "".join([f"<|speech_{int(idx)}|>" for idx in ref_codes])
         prompt = (
             f"user: Convert the text to speech:<|TEXT_PROMPT_START|>{ref_text} {input_text}"
             f"<|TEXT_PROMPT_END|>\nassistant:<|SPEECH_GENERATION_START|>{codes_str}"
         )
+        print(
+            f"[neutts] _infer_ggml: prompt_len={len(prompt)} "
+            f"ref_phones={repr(ref_text[:60])} input_phones={repr(input_text[:60])}",
+            flush=True,
+        )
         output = self.backbone(
             prompt,
             max_tokens=self.max_context,
-            temperature=1.0,
-            top_k=50,
+            temperature=temperature,
+            top_k=top_k,
             stop=["<|SPEECH_GENERATION_END|>"],
         )
         output_str = output["choices"][0]["text"]
+        print(
+            f"[neutts] _infer_ggml: output_len={len(output_str)} "
+            f"preview={repr(output_str[:120])}",
+            flush=True,
+        )
         return output_str
 
     def _infer_stream_ggml(
-        self, ref_codes: torch.Tensor, ref_text: str, input_text: str
+        self,
+        ref_codes: torch.Tensor,
+        ref_text: str,
+        input_text: str,
+        temperature: float = 1.0,
+        top_k: int = 50,
     ) -> Generator[np.ndarray, None, None]:
         ref_text = self._to_phones(ref_text)
         input_text = self._to_phones(input_text)
 
-        codes_str = "".join([f"<|speech_{idx}|>" for idx in ref_codes])
+        codes_str = "".join([f"<|speech_{int(idx)}|>" for idx in ref_codes])
         prompt = (
             f"user: Convert the text to speech:<|TEXT_PROMPT_START|>{ref_text} {input_text}"
             f"<|TEXT_PROMPT_END|>\nassistant:<|SPEECH_GENERATION_START|>{codes_str}"
         )
 
         audio_cache: list[np.ndarray] = []
-        token_cache: list[str] = [f"<|speech_{idx}|>" for idx in ref_codes]
+        # Store raw integer codes rather than token strings — avoids "".join()
+        # + regex on every chunk decode; slicing integers is O(1) per element.
+        int_cache: list[int] = list(ref_codes)
         n_decoded_samples: int = 0
         n_decoded_tokens: int = len(ref_codes)
 
         for item in self.backbone(
             prompt,
             max_tokens=self.max_context,
-            temperature=1.0,
-            top_k=50,
+            temperature=temperature,
+            top_k=top_k,
             stop=["<|SPEECH_GENERATION_END|>"],
             stream=True,
         ):
             output_str = item["choices"][0]["text"]
-            token_cache.append(output_str)
+            m = _SPEECH_TOKEN_RE.search(output_str)
+            if m:
+                int_cache.append(int(m.group(1)))
 
             if (
-                len(token_cache[n_decoded_tokens:])
+                len(int_cache) - n_decoded_tokens
                 >= self.streaming_frames_per_chunk + self.streaming_lookforward
             ):
 
@@ -430,13 +558,7 @@ class NeuTTS:
                     + (self.streaming_frames_per_chunk + 2 * self.streaming_overlap_frames)
                     * self.hop_length
                 )
-                curr_codes = token_cache[tokens_start:tokens_end]
-                recon = self._decode("".join(curr_codes))
-                recon = (
-                    recon
-                    if self.watermarker is None
-                    else self.watermarker.apply_watermark(recon, sample_rate=24_000)
-                )
+                recon = self._decode_from_ids(int_cache[tokens_start:tokens_end])
                 recon = recon[sample_start:sample_end]
                 audio_cache.append(recon)
 
@@ -448,29 +570,36 @@ class NeuTTS:
                 processed_recon = processed_recon[n_decoded_samples:new_samples_end]
                 n_decoded_samples = new_samples_end
                 n_decoded_tokens += self.streaming_frames_per_chunk
+
+                # Watermark the actual yielded slice, not each overlapping window.
+                if self.watermarker is not None:
+                    processed_recon = self.watermarker.apply_watermark(
+                        processed_recon, sample_rate=24_000
+                    )
                 yield processed_recon
 
-        # final decoding handled seperately as non-constant chunk size
-        remaining_tokens = len(token_cache) - n_decoded_tokens
-        if len(token_cache) > n_decoded_tokens:
+        # final decoding handled separately as non-constant chunk size
+        remaining_tokens = len(int_cache) - n_decoded_tokens
+        if remaining_tokens > 0:
             tokens_start = max(
-                len(token_cache)
+                len(int_cache)
                 - (self.streaming_lookback + self.streaming_overlap_frames + remaining_tokens),
                 0,
             )
             sample_start = (
-                len(token_cache) - tokens_start - remaining_tokens - self.streaming_overlap_frames
+                len(int_cache) - tokens_start - remaining_tokens - self.streaming_overlap_frames
             ) * self.hop_length
-            curr_codes = token_cache[tokens_start:]
-            recon = self._decode("".join(curr_codes))
-            recon = (
-                recon
-                if self.watermarker is None
-                else self.watermarker.apply_watermark(recon, sample_rate=24_000)
-            )
+            recon = self._decode_from_ids(int_cache[tokens_start:])
             recon = recon[sample_start:]
             audio_cache.append(recon)
 
             processed_recon = _linear_overlap_add(audio_cache, stride=self.streaming_stride_samples)
             processed_recon = processed_recon[n_decoded_samples:]
+
+            # The STFT inside the watermarker requires padding < input length (1024 per side).
+            # Final chunks can be very short (a few codec frames), so guard before applying.
+            if self.watermarker is not None and len(processed_recon) > 2048:
+                processed_recon = self.watermarker.apply_watermark(
+                    processed_recon, sample_rate=24_000
+                )
             yield processed_recon
